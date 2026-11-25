@@ -1,0 +1,11 @@
+# OpenAPI lint policy: the API has no auth yet and operations do not carry
+# operationIds, so those structural rules are off until Slice 4 (auth).
+extends:
+  - recommended
+
+rules:
+  info-license: off
+  no-server-example.com: off
+  operation-4xx-response: off
+  operation-operationId: off
+  security-defined: off
