@@ -42,16 +42,16 @@ func (s *PostgresStore) CreateObligation(ctx context.Context, name, idempotencyK
 	return result, nil
 }
 
-func (s *PostgresStore) CreateOccurrence(ctx context.Context, obligationID string, dueDate time.Time, amountVND int64, idempotencyKey string) (Occurrence, error) {
+func (s *PostgresStore) CreateOccurrence(ctx context.Context, obligationID string, dueDate time.Time, amountVND int64, isEstimate bool, idempotencyKey string) (Occurrence, error) {
 	var occurrenceID string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO obligation_occurrences (obligation_id, due_date, confirmed_amount_vnd, idempotency_key, request_fingerprint)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO obligation_occurrences (obligation_id, due_date, confirmed_amount_vnd, is_estimate, idempotency_key, request_fingerprint)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (idempotency_key) DO NOTHING
-		RETURNING id::text`, obligationID, dueDate, amountVND, idempotencyKey,
-		occurrenceFingerprint(obligationID, dueDate, amountVND)).Scan(&occurrenceID)
+		RETURNING id::text`, obligationID, dueDate, amountVND, isEstimate, idempotencyKey,
+		occurrenceFingerprint(obligationID, dueDate, amountVND, isEstimate)).Scan(&occurrenceID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return s.replayedOccurrence(ctx, obligationID, dueDate, amountVND, idempotencyKey)
+		return s.replayedOccurrence(ctx, obligationID, dueDate, amountVND, isEstimate, idempotencyKey)
 	}
 	if err != nil {
 		if isForeignKeyViolation(err) {
@@ -99,7 +99,8 @@ func (s *PostgresStore) UpdateOccurrenceAmount(ctx context.Context, occurrenceID
 	if amountVND < paidAmount {
 		return Occurrence{}, ErrAmountBelowPaid
 	}
-	command, err := tx.Exec(ctx, `UPDATE obligation_occurrences SET confirmed_amount_vnd = $2 WHERE id = $1`, occurrenceID, amountVND)
+	// entering the real amount is the confirmation, so the estimate flag drops
+	command, err := tx.Exec(ctx, `UPDATE obligation_occurrences SET confirmed_amount_vnd = $2, is_estimate = false WHERE id = $1`, occurrenceID, amountVND)
 	if err != nil {
 		return Occurrence{}, fmt.Errorf("updating occurrence amount: %w", err)
 	}
@@ -250,7 +251,7 @@ type rowQuerier interface {
 func getOccurrence(ctx context.Context, querier rowQuerier, occurrenceID string) (Occurrence, error) {
 	var result Occurrence
 	err := querier.QueryRow(ctx, `
-		SELECT o.id::text, o.obligation_id::text, b.name, o.due_date, o.confirmed_amount_vnd,
+		SELECT o.id::text, o.obligation_id::text, b.name, o.due_date, o.confirmed_amount_vnd, o.is_estimate,
 		       COALESCE(SUM(p.amount_vnd) FILTER (WHERE p.reversed_at IS NULL), 0)::bigint
 		FROM obligation_occurrences o
 		JOIN obligations b ON b.id = o.obligation_id
@@ -258,7 +259,7 @@ func getOccurrence(ctx context.Context, querier rowQuerier, occurrenceID string)
 		WHERE o.id = $1
 		GROUP BY o.id, b.name`, occurrenceID).Scan(
 		&result.ID, &result.ObligationID, &result.ObligationName, &result.DueDate,
-		&result.ConfirmedAmountVND, &result.PaidAmountVND)
+		&result.ConfirmedAmountVND, &result.IsEstimate, &result.PaidAmountVND)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Occurrence{}, ErrNotFound
 	}
@@ -283,14 +284,14 @@ func getPaymentSnapshot(ctx context.Context, querier rowQuerier, idempotencyKey 
 	var result Occurrence
 	var fingerprint string
 	err := querier.QueryRow(ctx, `
-		SELECT o.id::text, o.obligation_id::text, b.name, o.due_date, o.confirmed_amount_vnd,
+		SELECT o.id::text, o.obligation_id::text, b.name, o.due_date, o.confirmed_amount_vnd, o.is_estimate,
 		       p.paid_amount_vnd_after, p.request_fingerprint
 		FROM payments p
 		JOIN obligation_occurrences o ON o.id = p.occurrence_id
 		JOIN obligations b ON b.id = o.obligation_id
 		WHERE p.idempotency_key = $1`, idempotencyKey).Scan(
 		&result.ID, &result.ObligationID, &result.ObligationName, &result.DueDate,
-		&result.ConfirmedAmountVND, &result.PaidAmountVND, &fingerprint)
+		&result.ConfirmedAmountVND, &result.IsEstimate, &result.PaidAmountVND, &fingerprint)
 	if err != nil {
 		return Occurrence{}, "", err
 	}
@@ -308,9 +309,22 @@ func obligationFingerprint(name string) string {
 	return requestFingerprint("obligation", name)
 }
 
-func occurrenceFingerprint(obligationID string, dueDate time.Time, amountVND int64) string {
+// An occurrence request is identified by the bill, the due date, the amount and
+// whether the amount is only an estimate: flipping the flag moves the reserve from
+// expected to confirmed, so a retry with the other flag is a different request.
+func occurrenceFingerprint(obligationID string, dueDate time.Time, amountVND int64, isEstimate bool) string {
 	return requestFingerprint("occurrence", strings.ToLower(obligationID),
-		dueDate.UTC().Truncate(time.Microsecond).Format("2006-01-02T15:04:05.000000Z"), strconv.FormatInt(amountVND, 10))
+		dueDate.UTC().Truncate(time.Microsecond).Format("2006-01-02T15:04:05.000000Z"),
+		strconv.FormatInt(amountVND, 10), strconv.FormatBool(isEstimate))
+}
+
+// occurrenceFingerprintBeforeEstimate is how an occurrence was hashed before
+// is_estimate existed. Rows keyed then — including ones whose amount was edited
+// since — still have to replay, so a confirmed retry accepts both forms.
+func occurrenceFingerprintBeforeEstimate(obligationID string, dueDate time.Time, amountVND int64) string {
+	return requestFingerprint("occurrence", strings.ToLower(obligationID),
+		dueDate.UTC().Truncate(time.Microsecond).Format("2006-01-02T15:04:05.000000Z"),
+		strconv.FormatInt(amountVND, 10))
 }
 
 func isForeignKeyViolation(err error) bool {
@@ -334,7 +348,7 @@ func (s *PostgresStore) replayedObligation(ctx context.Context, name, idempotenc
 	return result, nil
 }
 
-func (s *PostgresStore) replayedOccurrence(ctx context.Context, obligationID string, dueDate time.Time, amountVND int64, idempotencyKey string) (Occurrence, error) {
+func (s *PostgresStore) replayedOccurrence(ctx context.Context, obligationID string, dueDate time.Time, amountVND int64, isEstimate bool, idempotencyKey string) (Occurrence, error) {
 	var occurrenceID string
 	var stored string
 	err := s.pool.QueryRow(ctx, `
@@ -343,8 +357,12 @@ func (s *PostgresStore) replayedOccurrence(ctx context.Context, obligationID str
 	if err != nil {
 		return Occurrence{}, fmt.Errorf("reading idempotent occurrence: %w", err)
 	}
-	if stored != occurrenceFingerprint(obligationID, dueDate, amountVND) {
-		return Occurrence{}, fmt.Errorf("replaying occurrence: %w", ErrIdempotencyKeyReused)
+	if stored != occurrenceFingerprint(obligationID, dueDate, amountVND, isEstimate) {
+		// a key recorded before is_estimate existed, or whose amount was edited
+		// since, still has to replay for a confirmed retry
+		if isEstimate || stored != occurrenceFingerprintBeforeEstimate(obligationID, dueDate, amountVND) {
+			return Occurrence{}, fmt.Errorf("replaying occurrence: %w", ErrIdempotencyKeyReused)
+		}
 	}
 	return getOccurrence(ctx, s.pool, occurrenceID)
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"grummans.finance.backend/internal/budget"
 	"grummans.finance.backend/internal/ledger"
 	"grummans.finance.backend/internal/obligation"
 	"grummans.finance.backend/internal/platform/httpapi"
@@ -29,13 +30,14 @@ func main() {
 
 	service := obligation.NewService(obligation.NewPostgresStore(pool))
 	ledgerService := ledger.NewService(ledger.NewPostgresStore(pool))
+	budgetService := budget.NewService(budget.NewPostgresStore(pool))
 	address := os.Getenv("BIND_ADDR")
 	if address == "" {
 		address = "127.0.0.1:8080"
 	}
 	server := &http.Server{
 		Addr:              address,
-		Handler:           httpapi.NewHandler(service, ledgerService),
+		Handler:           httpapi.NewHandler(service, ledgerService, budgetService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	slog.Info("api listening", "addr", server.Addr)

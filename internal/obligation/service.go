@@ -29,6 +29,9 @@ type Occurrence struct {
 	DueDate            time.Time `json:"due_date"`
 	ConfirmedAmountVND int64     `json:"confirmed_amount_vnd"`
 	PaidAmountVND      int64     `json:"paid_amount_vnd"`
+	// IsEstimate marks a variable bill booked with a reserve amount before its
+	// real amount is known (D-012); updating the amount confirms it.
+	IsEstimate bool `json:"is_estimate"`
 }
 
 func (o Occurrence) RemainingAmountVND() int64 {
@@ -67,7 +70,7 @@ type Payment struct {
 
 type Store interface {
 	CreateObligation(context.Context, string, string) (Obligation, error)
-	CreateOccurrence(context.Context, string, time.Time, int64, string) (Occurrence, error)
+	CreateOccurrence(context.Context, string, time.Time, int64, bool, string) (Occurrence, error)
 	UpdateOccurrenceAmount(context.Context, string, int64, string) (Occurrence, error)
 	GetOccurrence(context.Context, string) (Occurrence, error)
 	ListPayments(context.Context, string) ([]Payment, error)
@@ -87,7 +90,13 @@ func (s *Service) CreateObligation(ctx context.Context, name, idempotencyKey str
 }
 
 func (s *Service) CreateOccurrence(ctx context.Context, obligationID string, dueDate time.Time, amountVND int64, idempotencyKey string) (Occurrence, error) {
-	return s.store.CreateOccurrence(ctx, obligationID, dueDate, amountVND, idempotencyKey)
+	return s.store.CreateOccurrence(ctx, obligationID, dueDate, amountVND, false, idempotencyKey)
+}
+
+// CreateEstimatedOccurrence books a reserve amount for a variable bill whose
+// real amount is not known yet; updating the amount later confirms it (D-012).
+func (s *Service) CreateEstimatedOccurrence(ctx context.Context, obligationID string, dueDate time.Time, amountVND int64, idempotencyKey string) (Occurrence, error) {
+	return s.store.CreateOccurrence(ctx, obligationID, dueDate, amountVND, true, idempotencyKey)
 }
 
 func (s *Service) UpdateOccurrenceAmount(ctx context.Context, occurrenceID string, amountVND int64, idempotencyKey string) (Occurrence, error) {

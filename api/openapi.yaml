@@ -48,6 +48,12 @@ paths:
               properties:
                 due_date: {type: string, format: date}
                 amount_vnd: {type: integer, format: int64, minimum: 1}
+                is_estimate:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Books a reserve for a variable bill whose real amount is not known yet (D-012).
+                    Omitted means the amount is the real one; updating the amount later confirms it.
               additionalProperties: false
       responses:
         '201': {description: Created}
@@ -381,6 +387,103 @@ paths:
         '422':
           description: Unknown transaction, or a transaction that cannot back a payment (income, refund or credit-card posting)
           content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+  /api/v1/salary-receipts:
+    post:
+      summary: Record one actual salary receipt (a payday that already happened)
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 255}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount_vnd, received_on]
+              additionalProperties: false
+              properties:
+                amount_vnd: {type: integer, format: int64, minimum: 1}
+                received_on: {type: string, format: date}
+      responses:
+        '201':
+          description: Created
+          content: {application/json: {schema: {$ref: '#/components/schemas/SalaryReceipt'}}}
+        '400':
+          description: Invalid request
+          content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+        '409':
+          description: Idempotency-Key was already used with a different amount or date
+        '422':
+          description: Amount is not positive, or received_on is malformed or in the future
+    get:
+      summary: List salary receipts, newest payday first
+      responses:
+        '200':
+          description: Salary receipts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipts]
+                properties:
+                  receipts:
+                    type: array
+                    items: {$ref: '#/components/schemas/SalaryReceipt'}
+  /api/v1/budget/settings:
+    get:
+      summary: Read the configured buffer and total budget
+      responses:
+        '200':
+          description: Budget settings
+          content: {application/json: {schema: {$ref: '#/components/schemas/BudgetSettings'}}}
+    put:
+      summary: Replace the buffer and total budget
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 255}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [global_buffer_vnd, global_budget_vnd]
+              additionalProperties: false
+              description: >-
+                Both fields are mandatory on every call. A null global_budget_vnd clears the
+                total budget; an omitted field is a 400 so a forgotten knob cannot wipe a setting.
+              properties:
+                global_buffer_vnd: {type: integer, format: int64, minimum: 0}
+                global_budget_vnd: {type: [integer, 'null'], format: int64, minimum: 1}
+      responses:
+        '200':
+          description: Updated settings
+          content: {application/json: {schema: {$ref: '#/components/schemas/BudgetSettings'}}}
+        '400':
+          description: Invalid request
+          content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+        '409':
+          description: Idempotency-Key was already used with different settings
+        '422':
+          description: The buffer is negative or the total budget is not positive
+  /api/v1/budget/current:
+    get:
+      summary: Salary cycle, reserves, spendable amount and today's allowance
+      responses:
+        '200':
+          description: Budget snapshot
+          content: {application/json: {schema: {$ref: '#/components/schemas/BudgetSnapshot'}}}
+  /api/v1/cashflow/forecast:
+    get:
+      summary: Obligations still to pay before the next payday, confirmed and expected
+      responses:
+        '200':
+          description: Forecast
+          content: {application/json: {schema: {$ref: '#/components/schemas/CashflowForecast'}}}
 components:
   parameters:
     ObligationID:
@@ -461,3 +564,84 @@ components:
         paid_at: {type: string, format: date-time}
         reversed_at: {type: [string, 'null'], format: date-time}
         transaction_id: {type: [string, 'null'], format: uuid}
+    SalaryReceipt:
+      type: object
+      required: [id, amount_vnd, received_on, received_at]
+      properties:
+        id: {type: string, format: uuid}
+        amount_vnd: {type: integer, format: int64, minimum: 1}
+        received_on: {type: string, format: date}
+        received_at: {type: string, format: date-time}
+    BudgetSettings:
+      type: object
+      required: [global_buffer_vnd, global_budget_vnd]
+      properties:
+        global_buffer_vnd: {type: integer, format: int64, minimum: 0}
+        global_budget_vnd: {type: [integer, 'null'], format: int64, minimum: 1}
+    SalaryCycle:
+      type: object
+      required: [start, end, days_remaining, projected]
+      properties:
+        start: {type: string, format: date}
+        end:
+          type: string
+          format: date
+          description: Next payday; the cycle is half-open and ends before this date.
+        days_remaining: {type: integer, minimum: 1}
+        projected:
+          type: boolean
+          description: True when the next payday is the conservative day-10 projection instead of a recorded payday.
+    ForecastItem:
+      type: object
+      required: [occurrence_id, obligation_name, due_date, remaining_vnd, certainty, overdue]
+      properties:
+        occurrence_id: {type: string, format: uuid}
+        obligation_name: {type: string}
+        due_date: {type: string, format: date}
+        remaining_vnd: {type: integer, format: int64}
+        certainty: {type: string, enum: [confirmed, expected]}
+        overdue: {type: boolean}
+    BudgetSnapshot:
+      type: object
+      required:
+        - cycle
+        - cash_on_hand_vnd
+        - reserved_confirmed_vnd
+        - reserved_expected_vnd
+        - global_buffer_vnd
+        - global_budget_vnd
+        - spent_in_cycle_vnd
+        - available_vnd
+        - spendable_vnd
+        - daily_allowance_vnd
+        - warnings
+        - forecast
+      properties:
+        cycle: {$ref: '#/components/schemas/SalaryCycle'}
+        cash_on_hand_vnd: {type: integer, format: int64, description: Opening balances plus postings of non-credit accounts.}
+        reserved_confirmed_vnd: {type: integer, format: int64}
+        reserved_expected_vnd: {type: integer, format: int64}
+        global_buffer_vnd: {type: integer, format: int64}
+        global_budget_vnd: {type: [integer, 'null'], format: int64}
+        spent_in_cycle_vnd: {type: integer, format: int64, description: Expense and fee postings inside the cycle.}
+        available_vnd: {type: integer, format: int64, description: Cash minus reserves minus buffer; negative means a shortfall.}
+        spendable_vnd: {type: integer, format: int64, minimum: 0}
+        daily_allowance_vnd: {type: integer, format: int64, minimum: 0}
+        warnings:
+          type: array
+          items:
+            type: string
+            enum: [SHORTFALL, OVERDUE, ESTIMATED_RESERVE, PROJECTED_PAYDAY, BUDGET_EXCEEDED]
+        forecast:
+          type: array
+          items: {$ref: '#/components/schemas/ForecastItem'}
+    CashflowForecast:
+      type: object
+      required: [cycle, confirmed_total_vnd, expected_total_vnd, items]
+      properties:
+        cycle: {$ref: '#/components/schemas/SalaryCycle'}
+        confirmed_total_vnd: {type: integer, format: int64}
+        expected_total_vnd: {type: integer, format: int64}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ForecastItem'}

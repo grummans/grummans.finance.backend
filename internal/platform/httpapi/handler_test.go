@@ -26,7 +26,7 @@ func (f *fakeStore) CreateObligation(context.Context, string, string) (obligatio
 	return obligation.Obligation{}, nil
 }
 
-func (f *fakeStore) CreateOccurrence(context.Context, string, time.Time, int64, string) (obligation.Occurrence, error) {
+func (f *fakeStore) CreateOccurrence(context.Context, string, time.Time, int64, bool, string) (obligation.Occurrence, error) {
 	f.calls++
 	return obligation.Occurrence{}, nil
 }
@@ -103,7 +103,7 @@ func TestHandlerRejectsInvalidInput(t *testing.T) {
 			if tt.name == "unknown occurrence" {
 				store.getOccurrenceErr = obligation.ErrNotFound
 			}
-			handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}))
+			handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}), newTestBudgetService())
 			request := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			for key, value := range tt.headers {
 				request.Header.Set(key, value)
@@ -324,7 +324,7 @@ func TestHandlerLedgerValidation(t *testing.T) {
 			if tt.store == nil {
 				tt.store = &fakeLedgerStore{}
 			}
-			handler := NewHandler(obligation.NewService(&fakeStore{}), ledger.NewService(tt.store))
+			handler := NewHandler(obligation.NewService(&fakeStore{}), ledger.NewService(tt.store), newTestBudgetService())
 			request := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			for key, value := range tt.headers {
 				request.Header.Set(key, value)
@@ -345,7 +345,7 @@ func TestHandlerUpdateOccurrenceIsAmountOnlyAndMapsMissingObligation(t *testing.
 
 	t.Run("due_date is not part of the amount update", func(t *testing.T) {
 		store := &fakeStore{}
-		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}))
+		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}), newTestBudgetService())
 		request := httptest.NewRequest(http.MethodPatch, "/api/v1/occurrences/"+occurrenceID, strings.NewReader(`{"amount_vnd":5000,"due_date":"2026-01-01"}`))
 		request.Header.Set("Idempotency-Key", "occ-patch-1")
 		response := httptest.NewRecorder()
@@ -359,7 +359,7 @@ func TestHandlerUpdateOccurrenceIsAmountOnlyAndMapsMissingObligation(t *testing.
 
 	t.Run("missing obligation is a reference error", func(t *testing.T) {
 		store := &fakeStore{updateOccurrenceErr: obligation.ErrReferenceNotFound}
-		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}))
+		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}), newTestBudgetService())
 		request := httptest.NewRequest(http.MethodPatch, "/api/v1/occurrences/"+occurrenceID, strings.NewReader(`{"amount_vnd":5000}`))
 		request.Header.Set("Idempotency-Key", "occ-patch-2")
 		response := httptest.NewRecorder()
@@ -384,7 +384,7 @@ func TestHandlerListPayments(t *testing.T) {
 			PaidAt:        time.Date(2026, 11, 24, 9, 30, 0, 0, time.UTC),
 			TransactionID: &linked,
 		}}}
-		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}))
+		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}), newTestBudgetService())
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/occurrences/"+occurrenceID+"/payments", nil)
 		response := httptest.NewRecorder()
 
@@ -416,7 +416,7 @@ func TestHandlerListPayments(t *testing.T) {
 
 	t.Run("an occurrence without payments is an empty list", func(t *testing.T) {
 		store := &fakeStore{}
-		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}))
+		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}), newTestBudgetService())
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/occurrences/"+occurrenceID+"/payments", nil)
 		response := httptest.NewRecorder()
 
@@ -438,7 +438,7 @@ func TestHandlerListPayments(t *testing.T) {
 
 	t.Run("a missing occurrence is a 404", func(t *testing.T) {
 		store := &fakeStore{listPaymentsErr: obligation.ErrNotFound}
-		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}))
+		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}), newTestBudgetService())
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/occurrences/"+occurrenceID+"/payments", nil)
 		response := httptest.NewRecorder()
 
@@ -451,7 +451,7 @@ func TestHandlerListPayments(t *testing.T) {
 
 	t.Run("a non-uuid occurrence id is rejected before the store", func(t *testing.T) {
 		store := &fakeStore{}
-		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}))
+		handler := NewHandler(obligation.NewService(store), ledger.NewService(&fakeLedgerStore{}), newTestBudgetService())
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/occurrences/not-a-uuid/payments", nil)
 		response := httptest.NewRecorder()
 

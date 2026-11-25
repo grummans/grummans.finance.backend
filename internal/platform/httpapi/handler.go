@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"grummans.finance.backend/internal/budget"
 	"grummans.finance.backend/internal/ledger"
 	"grummans.finance.backend/internal/obligation"
 )
@@ -16,10 +17,11 @@ import (
 type Handler struct {
 	service *obligation.Service
 	ledger  *ledger.Service
+	budget  *budget.Service
 }
 
-func NewHandler(service *obligation.Service, ledgerService *ledger.Service) http.Handler {
-	h := &Handler{service: service, ledger: ledgerService}
+func NewHandler(service *obligation.Service, ledgerService *ledger.Service, budgetService *budget.Service) http.Handler {
+	h := &Handler{service: service, ledger: ledgerService, budget: budgetService}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/obligations", h.createObligation)
 	mux.HandleFunc("POST /api/v1/obligations/{obligationID}/occurrences", h.createOccurrence)
@@ -36,6 +38,12 @@ func NewHandler(service *obligation.Service, ledgerService *ledger.Service) http
 	mux.HandleFunc("GET /api/v1/transactions/{transactionID}", h.getTransaction)
 	mux.HandleFunc("PATCH /api/v1/transactions/{transactionID}", h.updateTransaction)
 	mux.HandleFunc("PATCH /api/v1/payments/{paymentID}/transaction", h.linkPaymentTransaction)
+	mux.HandleFunc("POST /api/v1/salary-receipts", h.createSalaryReceipt)
+	mux.HandleFunc("GET /api/v1/salary-receipts", h.listSalaryReceipts)
+	mux.HandleFunc("GET /api/v1/budget/settings", h.getBudgetSettings)
+	mux.HandleFunc("PUT /api/v1/budget/settings", h.updateBudgetSettings)
+	mux.HandleFunc("GET /api/v1/budget/current", h.getBudgetCurrent)
+	mux.HandleFunc("GET /api/v1/cashflow/forecast", h.getCashflowForecast)
 	return mux
 }
 
@@ -46,6 +54,8 @@ type createObligationRequest struct {
 type createOccurrenceRequest struct {
 	DueDate   string `json:"due_date"`
 	AmountVND int64  `json:"amount_vnd"`
+	// IsEstimate books a reserve for a variable bill whose real amount is unknown.
+	IsEstimate bool `json:"is_estimate"`
 }
 
 // updateOccurrenceRequest is amount-only: a silent due_date would be a lie
@@ -66,6 +76,7 @@ type occurrenceResponse struct {
 	ConfirmedAmountVND int64  `json:"confirmed_amount_vnd"`
 	PaidAmountVND      int64  `json:"paid_amount_vnd"`
 	RemainingAmountVND int64  `json:"remaining_amount_vnd"`
+	IsEstimate         bool   `json:"is_estimate"`
 	Status             string `json:"status"`
 }
 
@@ -114,7 +125,11 @@ func (h *Handler) createOccurrence(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "due_date must be YYYY-MM-DD")
 		return
 	}
-	result, err := h.service.CreateOccurrence(r.Context(), obligationID, dueDate, request.AmountVND, idempotencyKey)
+	create := h.service.CreateOccurrence
+	if request.IsEstimate {
+		create = h.service.CreateEstimatedOccurrence
+	}
+	result, err := create(r.Context(), obligationID, dueDate, request.AmountVND, idempotencyKey)
 	if err != nil {
 		writeDomainError(w, err)
 		return
@@ -213,7 +228,8 @@ func responseFor(occurrence obligation.Occurrence) occurrenceResponse {
 	return occurrenceResponse{
 		ID: occurrence.ID, ObligationID: occurrence.ObligationID, ObligationName: occurrence.ObligationName,
 		DueDate: occurrence.DueDate.Format("2006-01-02"), ConfirmedAmountVND: occurrence.ConfirmedAmountVND,
-		PaidAmountVND: occurrence.PaidAmountVND, RemainingAmountVND: occurrence.RemainingAmountVND(), Status: occurrence.Status(time.Now()),
+		PaidAmountVND: occurrence.PaidAmountVND, RemainingAmountVND: occurrence.RemainingAmountVND(),
+		IsEstimate: occurrence.IsEstimate, Status: occurrence.Status(time.Now()),
 	}
 }
 

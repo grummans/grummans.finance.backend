@@ -77,7 +77,7 @@ func TestHandlerLedgerRuneLimits(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &fakeLedgerStore{}
-			handler := NewHandler(obligation.NewService(&fakeStore{}), ledger.NewService(store))
+			handler := NewHandler(obligation.NewService(&fakeStore{}), ledger.NewService(store), newTestBudgetService())
 			request := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			request.Header.Set("Idempotency-Key", tt.idempotencyKey)
 			response := httptest.NewRecorder()
@@ -112,7 +112,7 @@ func TestHandlerUpdateTransactionCategoryShape(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := NewHandler(obligation.NewService(&fakeStore{}), ledger.NewService(&fakeLedgerStore{}))
+			handler := NewHandler(obligation.NewService(&fakeStore{}), ledger.NewService(&fakeLedgerStore{}), newTestBudgetService())
 			request := httptest.NewRequest(http.MethodPatch, "/api/v1/transactions/"+transactionID, strings.NewReader(tt.body))
 			request.Header.Set("Idempotency-Key", "shape-"+tt.name)
 			response := httptest.NewRecorder()
@@ -149,7 +149,7 @@ func TestHandlerRejectsNULCharacters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := NewHandler(obligation.NewService(&fakeStore{}), ledger.NewService(&fakeLedgerStore{}))
+			handler := NewHandler(obligation.NewService(&fakeStore{}), ledger.NewService(&fakeLedgerStore{}), newTestBudgetService())
 			request := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
 			request.Header.Set("Idempotency-Key", "nul-key")
 			response := httptest.NewRecorder()
