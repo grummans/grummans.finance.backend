@@ -45,7 +45,9 @@ jobs:
       - name: apply migrations to the service database
         run: go run ./cmd/migrate
       - name: integration tests against PostgreSQL
-        run: go test -count=1 -tags integration ./...
+        # -p 1: packages share one database and run in parallel otherwise, so a
+        # global sum (cash on hand) sees another package's rows mid-test
+        run: go test -count=1 -p 1 -tags integration ./...
       - name: lint the OpenAPI contract
         run: npx --yes @redocly/cli@latest lint api/openapi.yaml
 
